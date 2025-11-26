@@ -3,239 +3,283 @@ import pandas as pd
 import numpy as np
 import re
 import os
+import sys
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import make_pipeline
-from sklearn.model_selection import train_test_split
 import shap
 import nltk
-nltk.download('punkt')
+nltk.download('punkt', quiet=True)
 
-BOOKS_CSV = "books.csv"     
-REVIEWS_CSV = "reviews.csv"  
+# ---------- Config (user-provided schema) ----------
+BOOKS_CSV = "books.csv"
+REVIEWS_CSV = "reviews.csv"
 
+# book columns (from your message)
 BOOK_TITLE_COL = "title"
-BOOK_AVG_RATING_COL = "average_rating"   
-BOOK_RATING_COUNT_COL = "rating_number"  
-REV_BOOK_ID_COL = "book_id"  
-REV_TEXT_COL = "text"
-REV_RATING_COL = "rating"    
+# identificaton column: use parent_asin in books
+BOOK_ID_COL = "parent_asin"
+BOOK_AVG_RATING_COL = "average_rating"
+BOOK_RATING_COUNT_COL = "rating_number"
 
+# review columns (from your message)
+REV_TEXT_COL = "text"
+REV_RATING_COL = "rating"
+# reviews include both 'asin' and 'parent_asin' — prefer parent_asin, fall back to asin
+REV_BOOK_ID_PREFERRED = "parent_asin"
+REV_BOOK_ID_FALLBACK = "asin"
+
+# ---------- Student string (your input) ----------
+student_string = "STU039"   # <- you've told me this is your hash string
+# compute SHA256 and 8-char token
 def sha256_hex(s: str):
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
-def first_nonspace_chars(s: str, n=8):
-    # remove spaces and take first n characters
-    return "".join(s.split())[:n]
-
-student_string = "STU039"   
 student_hash_full_hex = sha256_hex(student_string)
 student_hash8 = student_hash_full_hex[:8].upper()
+
 print("Student string:", student_string)
 print("SHA256(full) (hex):", student_hash_full_hex)
 print("Student HASH (first 8 hex, UPPER):", student_hash8)
+print()
 
-# ---------- Step 2: load datasets ----------
+# ---------- Robust CSV loading helper ----------
+def try_read_csv(path):
+    # try comma, then tab, then infer
+    for sep in [",", "\t", None]:
+        try:
+            if sep is None:
+                df = pd.read_csv(path, sep=None, engine="python", dtype=str)
+            else:
+                df = pd.read_csv(path, sep=sep, dtype=str)
+            print(f"Loaded {path} with sep={sep!r}, shape={df.shape}")
+            return df
+        except Exception as e:
+            # continue to next separator
+            last_e = e
+    raise last_e
+
 if not os.path.exists(BOOKS_CSV) or not os.path.exists(REVIEWS_CSV):
-    raise FileNotFoundError(f"Make sure {BOOKS_CSV} and {REVIEWS_CSV} are present in the same folder.")
+    raise FileNotFoundError(f"Make sure {BOOKS_CSV} and {REVIEWS_CSV} are present in this folder.")
 
-books = pd.read_csv(BOOKS_CSV, dtype=str)
-reviews = pd.read_csv(REVIEWS_CSV, dtype=str)
+books = try_read_csv(BOOKS_CSV)
+reviews = try_read_csv(REVIEWS_CSV)
 
-# convert numeric columns where necessary
-for c in [BOOK_AVG_RATING_COL, BOOK_RATING_COUNT_COL]:
-    if c in books.columns:
-        books[c] = pd.to_numeric(books[c], errors="coerce")
+# show columns we expect vs what's present
+print("\nBooks columns available:", list(books.columns))
+print("Reviews columns available:", list(reviews.columns))
+print()
 
-if REV_RATING_COL in reviews.columns:
-    reviews[REV_RATING_COL] = pd.to_numeric(reviews[REV_RATING_COL], errors="coerce")
+# ---------- Normalise and select the review -> book id column ----------
+if REV_BOOK_ID_PREFERRED in reviews.columns:
+    REV_BOOK_ID_COL = REV_BOOK_ID_PREFERRED
+elif REV_BOOK_ID_FALLBACK in reviews.columns:
+    REV_BOOK_ID_COL = REV_BOOK_ID_FALLBACK
+else:
+    # if neither present, try to find a likely column name
+    found = None
+    for trycol in ["parent_asin", "asin", "book_id", "bookId"]:
+        if trycol in reviews.columns:
+            found = trycol
+            break
+    if found is None:
+        raise KeyError("Couldn't find an ASIN/parent ASIN column in reviews. Please check reviews.csv columns.")
+    REV_BOOK_ID_COL = found
 
-# If the book id column name different, try common alternatives
+# similarly ensure BOOK_ID_COL exists in books (fall back to 'asin' if needed)
 if BOOK_ID_COL not in books.columns:
-    for alt in ["id", "bookId", "book_id"]:
-        if alt in books.columns:
-            BOOK_ID_COL = alt
-            break
-if REV_BOOK_ID_COL not in reviews.columns:
-    for alt in ["book_id", "bookId", "bookId", "book"]:
-        if alt in reviews.columns:
-            REV_BOOK_ID_COL = alt
-            break
+    if "asin" in books.columns:
+        BOOK_ID_COL = "asin"
+    elif "parent_asin" in books.columns:
+        BOOK_ID_COL = "parent_asin"
+    else:
+        # pick first column that looks like ASIN
+        possible = [c for c in books.columns if "asin" in c.lower() or "parent" in c.lower()]
+        if possible:
+            BOOK_ID_COL = possible[0]
+        else:
+            raise KeyError("Couldn't find ASIN/parent ASIN column in books. Please check books.csv columns.")
 
-print("Using book id column:", BOOK_ID_COL)
-print("Using review -> book id column:", REV_BOOK_ID_COL)
+print("Using BOOK_ID_COL (books):", BOOK_ID_COL)
+print("Using REV_BOOK_ID_COL (reviews):", REV_BOOK_ID_COL)
+print()
 
-# ---------- Step 3: find books with rating_number == 1234 and average_rating == 5.0 ----------
-candidates = books[
-    (books.get(BOOK_RATING_COUNT_COL) == 1234) |
-    (books.get(BOOK_RATING_COUNT_COL) == "1234")
-].copy()
-
-if candidates.empty and BOOK_RATING_COUNT_COL in books.columns:
+# ---------- Ensure numeric rating columns are numeric where applicable ----------
+if BOOK_RATING_COUNT_COL in books.columns:
     try:
-        candidates = books[(books[BOOK_RATING_COUNT_COL].astype(int) == 1234)]
+        books[BOOK_RATING_COUNT_COL] = pd.to_numeric(books[BOOK_RATING_COUNT_COL], errors="coerce")
     except Exception:
         pass
 
-# additionally filter average_rating == 5.0
 if BOOK_AVG_RATING_COL in books.columns:
-    candidates = candidates[candidates[BOOK_AVG_RATING_COL] == 5.0]
+    try:
+        books[BOOK_AVG_RATING_COL] = pd.to_numeric(books[BOOK_AVG_RATING_COL], errors="coerce")
+    except Exception:
+        pass
 
-print(f"Found {len(candidates)} candidate book(s) with rating_count=1234 and avg_rating=5.0.")
+if REV_RATING_COL in reviews.columns:
+    try:
+        reviews[REV_RATING_COL] = pd.to_numeric(reviews[REV_RATING_COL], errors="coerce")
+    except Exception:
+        pass
 
-# If the dataset uses different names or numbers, we keep candidates empty-check
-if candidates.empty:
-    print("No exact candidate found with the exact filter. We'll broaden search to find reviews that contain the student hash.")
-    # We'll search reviews for the hash directly (next step)
-else:
-    print("Candidate titles:")
-    print(candidates[BOOK_TITLE_COL].fillna("").tolist())
+# ---------- Step: find reviews that contain the student hash ----------
+hash_token = student_hash8
+matches = reviews[reviews[REV_TEXT_COL].fillna("").str.contains(hash_token, case=False, na=False)]
+print(f"Found {len(matches)} review(s) containing the hash {hash_token} (case-insensitive).")
 
-# ---------- Step 4: scan reviews for the student hash (case-insensitive) ----------
-# search for either lowercase or uppercase 8-hex substring
-hash_pattern = re.compile(re.escape(student_hash8), flags=re.IGNORECASE)
-
-matches = reviews[reviews[REV_TEXT_COL].fillna("").str.contains(student_hash8, case=False, na=False)]
-print(f"Found {len(matches)} review(s) containing the hash {student_hash8} (case-insensitive).")
-
+# if none found, also try searching for lowercase prefix of full hex (defensive)
 if matches.empty:
-    print("No review contained the exact 8-char hash. You might need to check whether the dataset uses the lower-case/uppercase or full hash; searching for full hash prefix...")
-    # try searching for first 8 of the full lowercase
     alt = student_hash_full_hex[:8]
     matches = reviews[reviews[REV_TEXT_COL].fillna("").str.contains(alt, case=False, na=False)]
-    print("Found matches with alt:", len(matches))
+    print(f"After alternate search found {len(matches)} matches with token {alt}.")
 
-# If matches found, get the book id(s)
-if not matches.empty:
-    book_ids_with_hash = matches[REV_BOOK_ID_COL].unique().tolist()
-    print("Book IDs that have a review containing the student hash:", book_ids_with_hash)
-    # fetch the book title(s)
-    flagged_books = books[books[BOOK_ID_COL].isin(book_ids_with_hash)]
-    print("Flagged book titles:")
-    print(flagged_books[BOOK_TITLE_COL].tolist())
+if matches.empty:
+    print("No review containing the hash was found. Please confirm the dataset contains the manipulated review.")
 else:
-    print("No matches found in reviews for the student hash. Stopping here — confirm dataset or check for different string variants.")
+    # show a preview of the first few matching reviews
+    print("\n--- Example matched review(s) ---")
+    for i, row in matches.head(5).iterrows():
+        print(f"index={i}, {REV_BOOK_ID_COL}={row.get(REV_BOOK_ID_COL)}, rating={row.get(REV_RATING_COL)}")
+        txt = str(row.get(REV_TEXT_COL))[:400].replace("\n"," ")
+        print("text preview:", txt)
+        print("-" * 60)
 
-# ---------- Step 5: compute FLAG1 ----------
-# We need the book title of the identified book. If multiple flagged_books exist, we'll operate on the first one.
-if not matches.empty and not flagged_books.empty:
-    book_title = str(flagged_books.iloc[0][BOOK_TITLE_COL])
-    print("Identified book title:", book_title)
+# ---------- Collect book(s) that have those matched reviews ----------
+book_ids_with_hash = matches[REV_BOOK_ID_COL].dropna().unique().tolist() if not matches.empty else []
+print("\nBook IDs with matching reviews:", book_ids_with_hash)
+
+flagged_books = books[books[BOOK_ID_COL].isin(book_ids_with_hash)] if book_ids_with_hash else pd.DataFrame()
+print("Number of flagged books found in books.csv:", len(flagged_books))
+if not flagged_books.empty:
+    print("Flagged book titles (first 5):")
+    print(flagged_books[BOOK_TITLE_COL].fillna("").head(5).tolist())
+
+# ---------- FLAG1: compute SHA256 of first 8 non-space chars of the identified book's title ----------
+def first_nonspace_chars(s: str, n=8):
+    return "".join(str(s).split())[:n]
+
+if not flagged_books.empty:
+    book_title = str(flagged_books.iloc[0].get(BOOK_TITLE_COL, ""))
     first8 = first_nonspace_chars(book_title, n=8)
     flag1_full = sha256_hex(first8)
-    print("First 8 non-space chars of title:", first8)
-    print("FLAG1 (SHA256 of that string):", flag1_full)
+    print("\nIdentified book title:", book_title)
+    print("First 8 non-space chars:", first8)
+    print("FLAG1 (SHA256 of first8):", flag1_full)
 else:
     book_title = None
     flag1_full = None
+    print("\nFLAG1: NOT FOUND (no flagged book).")
 
-# ---------- Step 6: FLAG2 ----------
-# FLAG2 is simply the hash found in the fake review (the 8 hex characters).
+# ---------- FLAG2: the 8-hex token found in the fake review ----------
 if not matches.empty:
-    # pick the exact hash token from the first matching review (case-preserved)
-    first_match_text = matches.iloc[0][REV_TEXT_COL]
-    # find the token matching 8 hex
+    # extract first 8-hex substring from first matching review text
+    first_match_text = matches.iloc[0][REV_TEXT_COL] or ""
     found = re.search(r"[A-Fa-f0-9]{8}", first_match_text)
     if found:
         extracted_hash = found.group(0).upper()
     else:
-        extracted_hash = student_hash8
-    print("FLAG2 (hash found in review):", extracted_hash)
+        extracted_hash = hash_token.upper()
+    print("FLAG2 (hash from review):", extracted_hash)
 else:
     extracted_hash = None
 
-# ---------- Step 7: Train a model to separate suspicious vs genuine reviews for the identified book ----------
-# Heuristic labels for training:
-# - Suspicious: rating == 5 AND short (len < 60 chars) AND uses superlatives (perfect, best, amazing, etc.)
-# - Genuine: rating == 5 AND long (len > 80) AND contains domain words (plot, character, chapter, writing, style, theme)
-# We will train on *all* reviews (across dataset) to get a model, then apply to reviews of the target book.
-
+# ---------- Machine learning heuristic labels and model ----------
+# Create features used by heuristics
+reviews['text_len'] = reviews[REV_TEXT_COL].fillna("").apply(len)
 def contains_superlative(s):
     s = (s or "").lower()
-    superlatives = ["best", "perfect", "amazing", "incredible", "fantastic", "awesome", "unbelievable", "brilliant", "excellent", "flawless"]
+    superlatives = ["best", "perfect", "amazing", "incredible", "fantastic", "awesome", "unbelievable", "brilliant", "excellent", "flawless", "love"]
     return any(w in s for w in superlatives)
 
 def contains_domain_word(s):
     s = (s or "").lower()
-    domain_words = ["plot", "character", "characters", "plotline", "chapter", "writing", "style", "theme", "dialogue", "prose"]
+    domain_words = ["plot", "character", "characters", "plotline", "chapter", "writing", "style", "theme", "dialogue", "prose", "story"]
     return any(w in s for w in domain_words)
 
-reviews['text_len'] = reviews[REV_TEXT_COL].fillna("").apply(len)
 reviews['has_super'] = reviews[REV_TEXT_COL].fillna("").apply(contains_superlative)
 reviews['has_domain'] = reviews[REV_TEXT_COL].fillna("").apply(contains_domain_word)
 reviews['rating_num'] = pd.to_numeric(reviews.get(REV_RATING_COL), errors='coerce')
 
-# Build training set heuristically
 suspicious_mask = (reviews['rating_num'] == 5) & (reviews['text_len'] < 60) & (reviews['has_super'])
 genuine_mask = (reviews['rating_num'] == 5) & (reviews['text_len'] > 100) & (reviews['has_domain'])
 
 train_df = reviews[suspicious_mask | genuine_mask].copy()
-train_df['label'] = 0
-train_df.loc[suspicious_mask, 'label'] = 1  # 1 => suspicious, 0 => genuine
-
-print("Training examples:", len(train_df), "suspicious:", train_df['label'].sum(), "genuine:", (train_df['label']==0).sum())
-if len(train_df) < 50:
-    print("Warning: few heuristic training examples found. Consider relaxing heuristics or manually labelling more training data.")
-
-# Train classifier (TF-IDF + logistic)
-tfidf = TfidfVectorizer(max_features=20000, ngram_range=(1,2), token_pattern=r"(?u)\b\w+\b")
-X = tfidf.fit_transform(train_df[REV_TEXT_COL].fillna("").values)
-y = train_df['label'].values
-clf = LogisticRegression(max_iter=200, solver='liblinear')
-clf.fit(X, y)
-print("Trained logistic regression on heuristic data.")
-
-# ---------- Apply to reviews of the flagged book ----------
-if book_title is not None:
-    book_reviews = reviews[reviews[REV_BOOK_ID_COL].isin(book_ids_with_hash)].copy()
-    book_reviews['pred_prob_suspicious'] = clf.predict_proba(tfidf.transform(book_reviews[REV_TEXT_COL].fillna("").values))[:,1]
-    # Genuine = low predicted suspicion
-    genuine_reviews = book_reviews[book_reviews['pred_prob_suspicious'] <= 0.3]   # threshold; adjust if needed
-    print(f"Book reviews: {len(book_reviews)}; genuine (pred_prob<=0.3): {len(genuine_reviews)}")
+if train_df.empty:
+    print("\nWarning: heuristic training set empty. Try relaxing heuristics or provide manual labels.")
 else:
-    genuine_reviews = pd.DataFrame()
+    train_df['label'] = 0
+    train_df.loc[suspicious_mask, 'label'] = 1  # 1 => suspicious, 0 => genuine
+    print(f"\nHeuristic training examples: total={len(train_df)}, suspicious={train_df['label'].sum()}, genuine={(train_df['label']==0).sum()}")
 
-# ---------- Step 8: SHAP analysis on genuine reviews ----------
-# Use LinearExplainer (works well for linear models)
-if not genuine_reviews.empty:
-    X_background = X[:min(500, X.shape[0])]  # background from training set
-    explainer = shap.LinearExplainer(clf, X_background, feature_dependence="independent")
-    X_genuine = tfidf.transform(genuine_reviews[REV_TEXT_COL].fillna("").values)
-    shap_vals = explainer.shap_values(X_genuine)  # shape: (n_samples, n_features) for binary
-    # For logistic regression binary, shap_vals is an array shape (n_samples, n_features)
-    # We want features where mean SHAP is negative (reduce suspicion)
-    mean_shap = np.array(shap_vals).mean(axis=0)  # one value per feature
-    # get feature names
-    try:
-        feature_names = tfidf.get_feature_names_out()
-    except:
-        feature_names = np.array([f"f{i}" for i in range(mean_shap.shape[0])])
-    # find top 30 features with most negative mean shap (reduce suspicion)
-    idx_sorted = np.argsort(mean_shap)  # ascending: most negative first
-    top_reduce = idx_sorted[:30]
-    top_words_reduce = [(feature_names[i], mean_shap[i]) for i in top_reduce[:10]]
-    print("Top features that REDUCE suspicion (word, mean_SHAP):")
-    for w, v in top_words_reduce[:10]:
-        print(w, v)
-    # pick top 3 words
-    top3_words = [feature_names[i] for i in top_reduce[:3]]
-    print("Selected top-3 words that reduce suspicion:", top3_words)
-else:
+    # TF-IDF + Logistic Regression
+    tfidf = TfidfVectorizer(max_features=20000, ngram_range=(1,2), token_pattern=r"(?u)\b\w+\b")
+    X = tfidf.fit_transform(train_df[REV_TEXT_COL].fillna("").values)
+    y = train_df['label'].values
+    clf = LogisticRegression(max_iter=300, solver='liblinear')
+    clf.fit(X, y)
+    print("Trained logistic regression classifier on heuristic labels.")
+
+    # Apply to reviews of the flagged book(s)
+    if book_ids_with_hash:
+        book_reviews = reviews[reviews[REV_BOOK_ID_COL].isin(book_ids_with_hash)].copy()
+        if not book_reviews.empty:
+            book_reviews['pred_prob_suspicious'] = clf.predict_proba(tfidf.transform(book_reviews[REV_TEXT_COL].fillna("").values))[:,1]
+            # Genuine threshold (tuneable)
+            genuine_reviews = book_reviews[book_reviews['pred_prob_suspicious'] <= 0.3]
+            print(f"Book reviews total={len(book_reviews)}, predicted genuine (prob<=0.3)={len(genuine_reviews)}")
+        else:
+            genuine_reviews = pd.DataFrame()
+    else:
+        genuine_reviews = pd.DataFrame()
+
+    # SHAP on genuine reviews (if present)
     top3_words = []
+    if not genuine_reviews.empty:
+        # Use small background sample (from training set)
+        bg_samples = min(500, X.shape[0])
+        X_background = X[:bg_samples]
+        explainer = shap.LinearExplainer(clf, X_background, feature_dependence="independent")
+        X_genuine = tfidf.transform(genuine_reviews[REV_TEXT_COL].fillna("").values)
+        shap_vals = explainer.shap_values(X_genuine)  # returns (n_samples, n_features)
+        mean_shap = np.array(shap_vals).mean(axis=0)
+        try:
+            feature_names = tfidf.get_feature_names_out()
+        except:
+            feature_names = np.array([f"f{i}" for i in range(mean_shap.shape[0])])
+        idx_sorted = np.argsort(mean_shap)  # ascending: most negative first
+        top_reduce = idx_sorted[:30]
+        top3_words = [feature_names[i] for i in top_reduce[:3]]
+        print("\nTop features (words/phrases) that REDUCE suspicion (top 10 shown):")
+        for i in top_reduce[:10]:
+            print(feature_names[i], mean_shap[i])
+        print("\nTop-3 words selected for FLAG3:", top3_words)
+    else:
+        print("\nNo genuine reviews found for SHAP analysis; FLAG3 cannot be generated automatically.")
 
-# ---------- Step 9: make FLAG3 (you must insert your numeric ID) ----------
-# Concatenate (words without spaces) + your numeric ID, then take SHA256 and first 10 hex chars
+# ---------- FLAG3: build from top3 words + numeric ID ----------
 your_numeric_id = "039"   
-concatenated = "".join(top3_words) + str(your_numeric_id)
-flag3_full = sha256_hex(concatenated)
-flag3_prefix10 = flag3_full[:10]
-print("Concatenation for FLAG3:", concatenated)
-print("FLAG3 (first 10 hex of SHA256):", flag3_prefix10)
+if top3_words and your_numeric_id and your_numeric_id != "<YOUR_NUMERIC_ID>":
+    concat = "".join([w.replace(" ", "") for w in top3_words]) + str(your_numeric_id)
+    flag3_full = sha256_hex(concat)
+    flag3_prefix10 = flag3_full[:10]
+    print("\nConcatenation for FLAG3:", concat)
+    print("FLAG3 (first 10 hex of SHA256):", flag3_prefix10)
+else:
+    concat = None
+    flag3_full = None
+    flag3_prefix10 = None
+    if not top3_words:
+        print("\nFLAG3: cannot compute because top3 words not available.")
+    else:
+        print("\nFLAG3: numeric ID placeholder not replaced. Set your_numeric_id variable in the script and re-run to compute FLAG3.")
 
-# ---------- Step 10: Save flags to flags.txt (example format) ----------
+# ---------- Save flags (best-effort) ----------
 with open("flags.txt", "w") as f:
     f.write("FLAG1 = " + (flag1_full or "NOT_FOUND") + "\n")
     f.write("FLAG2 = FLAG2{" + (extracted_hash or "NOT_FOUND") + "}\n")
-    f.write("FLAG3 = FLAG3{" + flag3_prefix10 + "}\n")
+    if flag3_prefix10:
+        f.write("FLAG3 = FLAG3{" + flag3_prefix10 + "}\n")
+    else:
+        f.write("FLAG3 = NOT_COMPUTED (set numeric id and ensure SHAP finished)\n")
 
-print("flags.txt written. Inspect the file for the final flags (remember to replace placeholder numeric ID in the code before generating final FLAG3).")
+print("\nWrote flags.txt. Inspect it. If FLAG3 is NOT_COMPUTED, replace your_numeric_id in this script and re-run.")
