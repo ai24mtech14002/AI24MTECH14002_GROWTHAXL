@@ -17,11 +17,10 @@ REVIEWS_CSV = "reviews.csv"
 BOOK_TITLE_COL = "title"
 BOOK_AVG_RATING_COL = "average_rating"   
 BOOK_RATING_COUNT_COL = "rating_number"  
-REV_BOOK_ID_COL = "book_id"  # column in reviews that links to books
+REV_BOOK_ID_COL = "book_id"  
 REV_TEXT_COL = "text"
-REV_RATING_COL = "rating"    # numeric rating (e.g., 5)
+REV_RATING_COL = "rating"    
 
-# ---------- Step 0: Helper functions ----------
 def sha256_hex(s: str):
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
@@ -29,14 +28,12 @@ def first_nonspace_chars(s: str, n=8):
     # remove spaces and take first n characters
     return "".join(s.split())[:n]
 
-# ---------- Step 1: compute student hash ----------------
-student_string = "STU160"   # EXACT string from the challenge
+student_string = "STU039"   
 student_hash_full_hex = sha256_hex(student_string)
 student_hash8 = student_hash_full_hex[:8].upper()
 print("Student string:", student_string)
 print("SHA256(full) (hex):", student_hash_full_hex)
 print("Student HASH (first 8 hex, UPPER):", student_hash8)
-# (This is the hash you will search for in reviews)
 
 # ---------- Step 2: load datasets ----------
 if not os.path.exists(BOOKS_CSV) or not os.path.exists(REVIEWS_CSV):
@@ -74,7 +71,6 @@ candidates = books[
     (books.get(BOOK_RATING_COUNT_COL) == "1234")
 ].copy()
 
-# some datasets may label count column differently — try to coerce
 if candidates.empty and BOOK_RATING_COUNT_COL in books.columns:
     try:
         candidates = books[(books[BOOK_RATING_COUNT_COL].astype(int) == 1234)]
@@ -229,7 +225,7 @@ else:
 
 # ---------- Step 9: make FLAG3 (you must insert your numeric ID) ----------
 # Concatenate (words without spaces) + your numeric ID, then take SHA256 and first 10 hex chars
-your_numeric_id = "<YOUR_NUMERIC_ID>"   # <-- replace this with your numeric ID, e.g., "001" or "160"
+your_numeric_id = "039"   
 concatenated = "".join(top3_words) + str(your_numeric_id)
 flag3_full = sha256_hex(concatenated)
 flag3_prefix10 = flag3_full[:10]
