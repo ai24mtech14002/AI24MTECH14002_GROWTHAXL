@@ -1,11 +1,3 @@
-# solver.py
-"""
-Solver for the Capture The Flag Challenge.
-Assumptions:
- - books.csv contains at least: id, title, average_rating, rating_count (or rating_number)
- - reviews.csv contains at least: book_id (or bookId), text, rating (numeric)
- - Replace placeholders if your dataset uses different column names.
-"""
 import hashlib
 import pandas as pd
 import numpy as np
@@ -19,11 +11,9 @@ import shap
 import nltk
 nltk.download('punkt')
 
-# ---------- Config (change if your CSV columns / filenames differ) ----------
-BOOKS_CSV = "books.csv"      # change if needed
-REVIEWS_CSV = "reviews.csv"  # change if needed
+BOOKS_CSV = "books.csv"     
+REVIEWS_CSV = "reviews.csv"  
 
-# column name mapping (adapt if your CSV has different column names)
 BOOK_ID_COL = "book_id"      # fallback if 'id' or 'bookId' not present
 BOOK_TITLE_COL = "title"
 BOOK_AVG_RATING_COL = "average_rating"   # could be 'average_rating' or 'averageRating'
