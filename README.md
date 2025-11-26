@@ -1,4 +1,4 @@
-# CTF_STU039 — Capture The Flag Solution
+# STU039 — Capture The Flag 
 
 This repository contains my solution for the AI Forensics "Capture the Flag" challenge.
 
@@ -48,5 +48,6 @@ FLAG3 = FLAG3{9ba28c2941}
 
 
 ---
+
 
 
