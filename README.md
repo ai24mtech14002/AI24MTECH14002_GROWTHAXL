@@ -2,14 +2,14 @@
 
 This repository contains my solution for the AI Forensics "Capture the Flag" challenge.
 
-## 📌 Overview
+## Overview
 The goal of the challenge was to identify a manipulated book in a dataset, detect a hidden review containing a custom hash, and then perform SHAP-based authenticity analysis on associated reviews to derive three separate flags.
 
 The challenge was completed in three main stages:
 
 ---
 
-## 🥇 Step 1 — Identify the Manipulated Book (FLAG1)
+## Step 1 — Identify the Manipulated Book (FLAG1)
 - First, I computed the SHA256 hash of **"STU039"**, taking the first 8 uppercase hex characters:
 DBCC0D53
 - Then I filtered books with:
@@ -22,14 +22,14 @@ DBCC0D53
 
 ---
 
-## 🥈 Step 2 — Find the Fake Review (FLAG2)
+## Step 2 — Find the Fake Review (FLAG2)
 - The review containing my hash `"DBCC0D53"` was considered the injected fake review.
 - FLAG2 is simply:
 FLAG2{DBCC0D53}
 
 ---
 
-## 🥉 Step 3 — SHAP-Based Authenticity Analysis (FLAG3)
+## Step 3 — SHAP-Based Authenticity Analysis (FLAG3)
 - I trained a text classification model (TF-IDF + Logistic Regression) to differentiate:
 - *Suspicious reviews*: very short, overly positive, or containing superlatives  
 - *Genuine reviews*: longer, descriptive, domain-specific language  
@@ -41,7 +41,7 @@ bell, belle, best
 
 ---
 
-## ✔ Final Flags
+## Final Flags
 FLAG1 = a1f5042c13b6621671e120065aa91e2bf884fc1b1c3973b49974a60e5562d8fb
 FLAG2 = FLAG2{DBCC0D53}
 FLAG3 = FLAG3{9ba28c2941}
@@ -49,8 +49,4 @@ FLAG3 = FLAG3{9ba28c2941}
 
 ---
 
-## 📁 Files
-- `solver.py` — Full automated solution
-- `flags.txt` — Final flag outputs
-- `reflection.md` — Explanation of methods and reasoning
 
