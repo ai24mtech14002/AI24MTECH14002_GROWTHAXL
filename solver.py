@@ -1,5 +1,3 @@
-# solver.py
-
 import pandas as pd
 import hashlib
 import numpy as np
@@ -29,7 +27,8 @@ def get_student_hash(student_id):
 
 
 def find_target_book(books, reviews, student_hash):
-    # 1. Filter books with rating_number=1234 & avg_rating=5.0
+    
+    # I tried to filter the books with rating_number=1234 & avg_rating=5.0
     target_books = books[
         (books["rating_number"] == 1234) &
         (books["average_rating"] == 5.0)
@@ -38,7 +37,7 @@ def find_target_book(books, reviews, student_hash):
     if target_books.empty:
         raise Exception("No books found with rating_number=1234 and avg_rating=5.0")
 
-    # 2. Check reviews for hash in text
+    # then checked the reviews for hash in text
     mask = reviews["text"].str.contains(student_hash, case=False, na=False)
     fake_review = reviews[mask]
 
@@ -51,7 +50,7 @@ def find_target_book(books, reviews, student_hash):
     print(reviews.columns)
     asin = fake_review.iloc[0]["asin"]
 
-    # Find the corresponding book
+    # Finding the corresponding book
     book = target_books[target_books["parent_asin"] == asin]
     if book.empty:
         raise Exception("Fake review found but book does not match filtering rules!")
@@ -60,7 +59,8 @@ def find_target_book(books, reviews, student_hash):
 
 
 def compute_flag1(book_title):
-    # Take first 8 non-space characters
+    
+    # Taking the first 8 non-space characters
     key = "".join(book_title.split())[:8]
     return hashlib.sha256(key.encode()).hexdigest()
 
@@ -94,7 +94,7 @@ def label_suspicion(row):
 
 
 def compute_flag3(reviews, book_asin, student_id):
-    # Extract all reviews for the book
+    # Extracting all reviews for the book
     book_reviews = reviews[reviews["asin"] == book_asin].copy()
 
     # Label data
@@ -170,3 +170,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
