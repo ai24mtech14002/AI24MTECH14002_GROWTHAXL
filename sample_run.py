@@ -14,10 +14,9 @@ nltk.download('punkt')
 BOOKS_CSV = "books.csv"     
 REVIEWS_CSV = "reviews.csv"  
 
-BOOK_ID_COL = "book_id"      # fallback if 'id' or 'bookId' not present
 BOOK_TITLE_COL = "title"
-BOOK_AVG_RATING_COL = "average_rating"   # could be 'average_rating' or 'averageRating'
-BOOK_RATING_COUNT_COL = "rating_number"  # could be 'rating_count' or similar
+BOOK_AVG_RATING_COL = "average_rating"   
+BOOK_RATING_COUNT_COL = "rating_number"  
 REV_BOOK_ID_COL = "book_id"  # column in reviews that links to books
 REV_TEXT_COL = "text"
 REV_RATING_COL = "rating"    # numeric rating (e.g., 5)
