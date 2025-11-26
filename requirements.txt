@@ -1,0 +1,5 @@
+pandas&gt;=1.5.0
+numpy&gt;=1.21.0
+scikit-learn&gt;=1.0.0
+nltk&gt;=3.8.0
+shap
